@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECHO Sensor</title>
+<style>
+  body{margin:0;background:#0e1418;color:#e6edf0;font-family:system-ui,Segoe UI,Arial,sans-serif}
+  main{max-width:420px;margin:0 auto;padding:22px 18px 40px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#8a9ca6;font-size:13px;margin:0 0 18px}
+  #status{font-size:13px;color:#8a9ca6;margin:0 0 12px;min-height:34px}
+  .mag{font:600 44px ui-monospace,Consolas,monospace;text-align:center;margin:6px 0}
+  .mag small{font-size:13px;color:#8a9ca6}
+  svg{width:100%;background:#1b2832;border:1px solid #26343f;border-radius:10px;margin:6px 0 14px}
+  .row{display:flex;justify-content:space-between;font-size:13px;color:#8a9ca6;margin-bottom:10px}
+  .row b{color:#e6edf0;font-family:ui-monospace,Consolas,monospace}
+  label{display:block;font-size:13px;color:#8a9ca6;margin:14px 0}
+  button{width:100%;padding:13px;border-radius:10px;border:1px solid #6b9bf2;background:#2f6fe0;color:#fff;font-size:15px;margin-bottom:10px;cursor:pointer}
+  button.alt{background:#1b2832;color:#e6edf0;border-color:#26343f}
+  .verdict{margin-top:14px;padding:12px;border-radius:10px;background:#152028;border:1px solid #26343f;font-size:14px;line-height:1.5}
+</style>
+</head>
+<body>
+<main>
+  <h1>ECHO Sensor</h1>
+  <p class="sub">Your phone becomes one sensor in a community early-warning network.</p>
+  <p id="status">Idle. Tap Start sensing to read your phone's motion sensor.</p>
+  <div class="mag"><span id="mag">0.0</span> <small>m/s² shock</small></div>
+  <svg viewBox="0 0 240 70"><polyline id="line" fill="none" stroke="#6b9bf2" stroke-width="1.8" points=""/></svg>
+  <div class="row"><span>Anomalies counted</span><b id="bumps">0</b></div>
+  <div class="row"><span>Normal readings sent</span><b id="bases">0</b></div>
+  <div class="row"><span>Your device</span><b id="devid">-</b></div>
+  <label><input type="checkbox" id="fixed" checked> Test mode: pin reports to a fixed point in Kisii town</label>
+  <button id="start">Start sensing</button>
+  <button id="sim" class="alt">Simulate a bump</button>
+  <button id="simBig" class="alt">Simulate a big bump</button>
+  <button id="teach" class="alt">Teach this place: rough road</button>
+  <div class="verdict" id="verdict">No reports sent yet.</div>
+</main>
+
+<script>
+const THRESHOLD = 9;                       // m/s² a shock must reach before we even ask the server
+const BASELINE_EVERY_MS = 10000;           // how often a moving phone sends a normal-vibration reading
+const KISII = { latitude: -0.6817, longitude: 34.7666 };
+const $ = id => document.getElementById(id);
+
+// A random ID for this phone, kept in the browser so it stays the same between visits
+const memory = {};
+const newId = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+function getId(key) {
+  try {
+    let v = localStorage.getItem(key);
+    if (!v) { v = newId(); localStorage.setItem(key, v); }
+    return v;
+  } catch (e) {
+    if (!memory[key]) memory[key] = newId();
+    return memory[key];
+  }
+}
+const deviceId = "phone-" + getId("echo_device").slice(0, 8);
+const fingerprint = getId("echo_fp");
+$("devid").textContent = deviceId;
+
+function getPosition() {
+  return new Promise(resolve => {
+    if ($("fixed").checked || !navigator.geolocation) return resolve(KISII);
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude }),
+      () => resolve(KISII),
+      { enableHighAccuracy: true, timeout: 4000, maximumAge: 10000 }
+    );
+  });
+}
+
+function post(url, body) {
+  return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+let counted = 0, basesSent = 0;
+
+async function sendReport(magnitude) {
+  const pos = await getPosition();
+  try {
+    const res = await post("/api/report/", {
+      device_id: deviceId, fingerprint: fingerprint,
+      latitude: pos.latitude, longitude: pos.longitude, magnitude: magnitude
+    });
+    const data = await res.json();
+    if (!res.ok) { $("verdict").textContent = data.error || "The server refused the report."; return; }
+    if (!data.accepted) {
+      $("verdict").textContent = "Normal for this place: " + data.anomaly + "x the usual vibration, so it was not counted as an anomaly.";
+      return;
+    }
+    counted++;
+    $("bumps").textContent = counted;
+    $("verdict").textContent = "Anomaly: " + data.anomaly + "x stronger than normal here" +
+      (data.baseline_learned ? "" : " (this place has no learned baseline yet)") +
+      ". Cell " + data.cell_id + ": " + data.independent_sources + " independent source(s), trust score " +
+      data.score + " (" + data.state + ").";
+  } catch (e) {
+    $("verdict").textContent = "Could not reach the server. Is it running?";
+  }
+}
+
+async function sendBaseline(pos, rms) {
+  const res = await post("/api/baseline/", { latitude: pos.latitude, longitude: pos.longitude, rms: rms });
+  const data = await res.json();
+  if (res.ok) { basesSent++; $("bases").textContent = basesSent; }
+  return data;
+}
+
+// Live shock graph, bump detection and the normal-vibration window
+let buf = Array(60).fill(0), lastBump = 0, sensing = false, gotData = false, raf = 0;
+let winSumSq = 0, winCount = 0, winHadShock = false;
+
+function drawLine() {
+  raf = 0;
+  $("line").setAttribute("points", buf.map((v, i) => (i * 4) + "," + (66 - Math.min(60, v * 3.2))).join(" "));
+}
+function pushValue(v, fromSensor) {
+  buf.push(v); buf.shift();
+  $("mag").textContent = v.toFixed(1);
+  if (!raf) raf = requestAnimationFrame(drawLine);
+  if (fromSensor) {
+    winSumSq += v * v; winCount++;
+    if (v > THRESHOLD) winHadShock = true;
+  }
+  if (v > THRESHOLD && Date.now() - lastBump > 2500) { lastBump = Date.now(); sendReport(v); }
+}
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null) return;
+  gotData = true;
+  pushValue(Math.abs(Math.hypot(a.x, a.y, a.z) - 9.81), true);
+}
+
+// Every 10 seconds a moving phone tells the server what normal vibration feels like here
+async function baselineTick() {
+  const enough = sensing && winCount >= 100;
+  const rms = enough ? Math.sqrt(winSumSq / winCount) : 0;
+  const clean = enough && !winHadShock && rms >= 0.5 && rms <= 8;   // moving, but no shock in this window
+  winSumSq = 0; winCount = 0; winHadShock = false;
+  if (!clean) return;
+  try { await sendBaseline(await getPosition(), rms); } catch (e) {}
+}
+setInterval(baselineTick, BASELINE_EVERY_MS);
+
+$("start").onclick = async () => {
+  if (sensing) return;
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      const p = await DeviceMotionEvent.requestPermission();
+      if (p !== "granted") { $("status").textContent = "Motion permission was denied."; return; }
+    }
+  } catch (e) { $("status").textContent = "Could not access the motion sensor."; return; }
+  window.addEventListener("devicemotion", onMotion);
+  sensing = true;
+  $("start").textContent = "Sensing";
+  $("status").textContent = "Listening for shocks...";
+  setTimeout(() => {
+    if (!gotData) $("status").textContent = "No motion sensor found here. Use Simulate a bump instead.";
+  }, 1800);
+};
+
+function playBump(seq) {
+  let i = 0;
+  const t = setInterval(() => { pushValue(seq[i++], false); if (i >= seq.length) clearInterval(t); }, 70);
+}
+$("sim").onclick = () => playBump([2, 4, 9, 18, 12, 5, 2, 1]);
+$("simBig").onclick = () => playBump([2, 4, 9, 30, 20, 5, 2, 1]);
+
+// Demo helper: pretend a phone drove this place and found it to be a rough road
+$("teach").onclick = async () => {
+  $("teach").disabled = true;
+  try {
+    const pos = await getPosition();
+    let last = null;
+    for (let i = 0; i < 12; i++) last = await sendBaseline(pos, 3 + Math.random());
+    $("verdict").textContent = "Taught cell " + last.cell_id + " that normal here is a rough road (" + last.samples + " readings).";
+  } catch (e) {
+    $("verdict").textContent = "Could not reach the server. Is it running?";
+  } finally {
+    $("teach").disabled = false;
+  }
+};
+</script>
+</body>
+</html>

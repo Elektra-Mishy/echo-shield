@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECHO-SHIELD Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{--bg:#0e1418;--panel:#152028;--panel2:#1b2832;--line:#26343f;--text:#e6edf0;--muted:#8a9ca6;
+        --risk:#e55a58;--warn:#e8a33d;--rej:#8a9ca6;--net:#6b9bf2}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Segoe UI,Arial,sans-serif}
+  .layout{display:grid;grid-template-columns:1fr 350px;height:100vh}
+  #map{height:100%;background:#10181e}
+  .leaflet-tile-pane{filter:invert(1) hue-rotate(180deg) brightness(.95) contrast(.9)}
+  aside{background:var(--panel);border-left:1px solid var(--line);padding:18px;overflow-y:auto}
+  h1{font-size:20px;margin:0}
+  .sub{color:var(--muted);font-size:12.5px;margin:3px 0 16px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+  .stat b{display:block;font:600 22px ui-monospace,Consolas,monospace}
+  .stat span{font-size:11px;color:var(--muted)}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+  .card h2{font-size:13px;margin:0 0 10px}
+  .ring{width:92px;height:92px;border-radius:50%;border:8px solid var(--line);display:flex;align-items:center;justify-content:center;margin:4px auto 10px;font:600 30px ui-monospace,Consolas,monospace}
+  .center{text-align:center;font-size:12.5px;color:var(--muted)}
+  .chip{display:inline-block;font-size:11px;font-weight:600;padding:3px 10px;border-radius:999px;margin:6px 0}
+  .f{margin:10px 0}
+  .f .h{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px}
+  .f .h b{color:var(--text);font-weight:500}
+  .bar{height:6px;border-radius:4px;background:var(--bg);border:1px solid var(--line);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--net);transition:width .5s}
+  .why{margin:12px 0 4px;border-top:1px solid var(--line);padding-top:10px}
+  .why div{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .why b{color:var(--text);font-weight:500;text-align:right}
+  .verdict{font-size:12.5px;line-height:1.55;color:var(--muted);border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
+  .zone{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12.5px}
+  .zone:hover{background:var(--bg)}
+  .zone i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px}
+  .zone span:last-child{font-family:ui-monospace,Consolas,monospace;color:var(--muted)}
+  .empty{font-size:12.5px;color:var(--muted);line-height:1.5}
+  .btns{display:grid;gap:8px;margin-bottom:10px}
+  .btn{border:1px solid var(--line);background:var(--bg);color:var(--text);padding:10px 12px;border-radius:9px;font:500 13px system-ui,Segoe UI,Arial,sans-serif;cursor:pointer;text-align:left}
+  .btn:hover{border-color:var(--net)}
+  .btn.good{border-color:#2f9e74}
+  .btn.bad{border-color:var(--risk)}
+  .btn:disabled{opacity:.5;cursor:wait}
+  .join{display:flex;gap:14px;align-items:center}
+  .join h2{margin-bottom:6px}
+  #qr{background:#fff;padding:6px;border-radius:8px;line-height:0;flex:none}
+  #joinUrl{word-break:break-all;font-family:ui-monospace,Consolas,monospace;font-size:11px;margin:4px 0 0}
+  .foot{font-size:11.5px;color:var(--muted);text-align:center}
+  @keyframes pulse{0%,100%{fill-opacity:.25}50%{fill-opacity:.65}}
+  .pulse{animation:pulse 1.6s infinite}
+  @media(max-width:900px){.layout{grid-template-columns:1fr;grid-template-rows:55vh auto;height:auto}aside{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div id="map"></div>
+  <aside>
+    <h1>ECHO-SHIELD</h1>
+    <p class="sub">Kisii pilot zone · live community early-warning map</p>
+
+    <div class="stats">
+      <div class="stat"><b id="nRisk" style="color:var(--risk)">0</b><span>high-risk</span></div>
+      <div class="stat"><b id="nWarn" style="color:var(--warn)">0</b><span>suspicious</span></div>
+      <div class="stat"><b id="nRej">0</b><span>rejected</span></div>
+    </div>
+
+    <div class="card join">
+      <div id="qr"></div>
+      <div>
+        <h2>Join the network</h2>
+        <p class="empty" id="joinText">Scan with your phone camera to become a sensor.</p>
+        <p class="empty" id="joinUrl"></p>
+      </div>
+    </div>
+
+    <div class="card" id="detail">
+      <h2>Selected zone</h2>
+      <p class="empty">Tap a coloured square on the map, or a zone in the list below, to see how its trust score was worked out.</p>
+    </div>
+
+    <div class="card">
+      <h2>Active zones (last 3 minutes)</h2>
+      <div id="zones"><p class="empty">No reports yet. Open /sense/ on a phone and report a bump.</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Demo scenarios</h2>
+      <div class="btns">
+        <button class="btn good" data-s="real">Real pothole · 5 independent phones</button>
+        <button class="btn bad" data-s="fake">One fake report</button>
+        <button class="btn bad" data-s="bot">Bot swarm · 6 cloned devices</button>
+        <button class="btn" data-s="clear">Clear map</button>
+      </div>
+      <p class="empty" id="demoNote">Fires scenarios into the real trust engine.</p>
+    </div>
+
+    <p class="foot" id="updated">Connecting...</p>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const KISII = [-0.6817, 34.7666];
+const SIZE = 0.001;   // must match GRID_SIZE_DEG in settings.py
+const COLORS = { "high-risk": "#e55a58", "suspicious": "#e8a33d", "rejected": "#8a9ca6" };
+const VERDICT = {
+  "high-risk": "Several independent devices corroborate a surface anomaly in the same time window. Flagged for field verification.",
+  "suspicious": "Some agreement, but not enough independent confirmation yet. Watching this zone.",
+  "rejected": "Not enough independent corroboration. One device, or cloned devices, cannot trigger an alert."
+};
+const $ = id => document.getElementById(id);
+
+const map = L.map("map").setView(KISII, 15);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "&copy; OpenStreetMap contributors"
+}).addTo(map);
+
+const layers = {};      // cell_id -> Leaflet rectangle
+let cells = [];
+let selected = null;
+
+function styleFor(c) {
+  return {
+    color: COLORS[c.state], weight: 2, fillColor: COLORS[c.state], fillOpacity: 0.35,
+    dashArray: c.state === "rejected" ? "5 5" : null,
+    className: c.state === "high-risk" ? "pulse" : ""
+  };
+}
+
+function drawMap() {
+  const seen = new Set();
+  cells.forEach(c => {
+    seen.add(c.cell_id);
+    const h = SIZE / 2;
+    const bounds = [[c.latitude - h, c.longitude - h], [c.latitude + h, c.longitude + h]];
+    if (layers[c.cell_id]) {
+      layers[c.cell_id].setBounds(bounds);
+      layers[c.cell_id].setStyle(styleFor(c));
+      if (layers[c.cell_id].getElement()) {
+        layers[c.cell_id].getElement().setAttribute("class",
+          "leaflet-interactive" + (c.state === "high-risk" ? " pulse" : ""));
+      }
+    } else {
+      const rect = L.rectangle(bounds, styleFor(c)).addTo(map);
+      rect.on("click", () => select(c.cell_id));
+      layers[c.cell_id] = rect;
+    }
+  });
+  Object.keys(layers).forEach(id => {
+    if (!seen.has(id)) { map.removeLayer(layers[id]); delete layers[id]; }
+  });
+}
+
+function drawStats() {
+  $("nRisk").textContent = cells.filter(c => c.state === "high-risk").length;
+  $("nWarn").textContent = cells.filter(c => c.state === "suspicious").length;
+  $("nRej").textContent = cells.filter(c => c.state === "rejected").length;
+}
+
+function drawList() {
+  if (!cells.length) {
+    $("zones").innerHTML = '<p class="empty">No reports yet. Open /sense/ on a phone and report a bump.</p>';
+    return;
+  }
+  const order = { "high-risk": 0, "suspicious": 1, "rejected": 2 };
+  const sorted = cells.slice().sort((a, b) => order[a.state] - order[b.state] || b.score - a.score);
+  $("zones").innerHTML = sorted.map(c =>
+    '<div class="zone" data-id="' + c.cell_id + '"><span><i style="background:' + COLORS[c.state] + '"></i>' +
+    c.cell_id + '</span><span>' + c.score + '</span></div>'
+  ).join("");
+  document.querySelectorAll(".zone").forEach(el => {
+    el.onclick = () => { select(el.dataset.id); const c = cells.find(x => x.cell_id === el.dataset.id); if (c) map.flyTo([c.latitude, c.longitude], 17); };
+  });
+}
+
+function bar(label, value) {
+  const pct = Math.round(value * 100);
+  return '<div class="f"><div class="h"><span>' + label + '</span><b>' + pct + '%</b></div>' +
+         '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+}
+
+function drawDetail() {
+  const c = cells.find(x => x.cell_id === selected);
+  if (!c) {
+    $("detail").innerHTML = '<h2>Selected zone</h2><p class="empty">Tap a coloured square on the map, or a zone in the list below, to see how its trust score was worked out.</p>';
+    return;
+  }
+  const col = COLORS[c.state];
+  $("detail").innerHTML =
+    '<h2>Zone ' + c.cell_id + '</h2>' +
+    '<div class="ring" style="border-color:' + col + '">' + c.score + '</div>' +
+    '<div class="center"><span class="chip" style="background:' + col + '33;color:' + col + '">' + c.state.toUpperCase() + '</span><br>' +
+    c.reports + ' report(s) from ' + c.independent_sources + ' independent source(s)</div>' +
+    bar("Independent sources", c.agreement) + bar("Time clustering", c.clustering) + bar("Device reliability", c.reliability) +
+    '<div class="why">' +
+      '<div><span>Normal vibration here</span><b>' + c.baseline + ' m/s² · ' + (c.baseline_learned ? 'learned from phones' : 'default estimate') + '</b></div>' +
+      '<div><span>Strongest shock</span><b>' + c.strongest_shock + ' m/s² · ' + c.times_normal + 'x normal</b></div>' +
+    '</div>' +
+    '<div class="verdict">' + VERDICT[c.state] + '</div>';
+}
+
+function select(id) { selected = id; drawDetail(); }
+
+async function poll() {
+  try {
+    const res = await fetch("/api/cells/");
+    const data = await res.json();
+    cells = data.cells;
+    drawMap(); drawStats(); drawList(); drawDetail();
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("updated").textContent = "Server not reachable";
+  }
+}
+const DEMO_NOTE = {
+  real: "Real pothole: 5 independent phones agree in the same place and time.",
+  fake: "Fake report: a single unverified phone claims a big shock.",
+  bot: "Bot swarm: 6 cloned devices share one fingerprint, so they count as one source."
+};
+document.querySelectorAll("[data-s]").forEach(btn => {
+  btn.onclick = async () => {
+    const which = btn.dataset.s;
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/demo/" + which + "/", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { $("demoNote").textContent = data.error || "Demo failed."; return; }
+      if (which === "clear") {
+        selected = null;
+        $("demoNote").textContent = "Map cleared.";
+        await poll();
+        return;
+      }
+      await poll();
+      selected = data.cell_id;
+      drawDetail();
+      const c = cells.find(x => x.cell_id === data.cell_id);
+      if (c) map.flyTo([c.latitude, c.longitude], 16);
+      $("demoNote").textContent = DEMO_NOTE[which] + " Trust score " + data.score + " (" + data.state + ").";
+    } catch (e) {
+      $("demoNote").textContent = "Could not reach the server.";
+    } finally {
+      btn.disabled = false;
+    }
+  };
+});
+
+// QR code that sends phones to the sensor page. It only works when this dashboard is opened
+// through the public tunnel address, because phones cannot reach 127.0.0.1.
+function drawJoin() {
+  const url = location.origin + "/sense/";
+  const box = $("qr");
+  const onLaptop = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  if (onLaptop) {
+    box.style.display = "none";
+    $("joinText").textContent = "Open this dashboard through your public tunnel address to get a QR code that phones can scan.";
+    return;
+  }
+  $("joinUrl").textContent = url;
+  if (typeof QRCode === "undefined") { box.style.display = "none"; return; }
+  box.innerHTML = "";
+  new QRCode(box, { text: url, width: 96, height: 96, colorDark: "#0e1418", colorLight: "#ffffff" });
+}
+drawJoin();
+
+poll();
+setInterval(poll, 3000);
+</script>
+</body>
+</html>
