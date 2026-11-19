@@ -1,5 +1,4 @@
 from django.contrib import admin
-
 from .models import BaselineSample, Device, Report
 
 
@@ -11,7 +10,7 @@ class DeviceAdmin(admin.ModelAdmin):
 
 @admin.register(Report)
 class ReportAdmin(admin.ModelAdmin):
-    list_display = ("device", "cell_id", "magnitude", "anomaly", "latitude", "longitude", "created_at")
+    list_display = ("device", "cell_id", "magnitude", "anomaly", "corroborated", "created_at")
     list_filter = ("cell_id",)
 
 

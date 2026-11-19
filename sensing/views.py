@@ -9,6 +9,7 @@ from django.views.decorators.http import require_GET, require_POST
 
 from .anomaly import assess_shock
 from .models import BaselineSample, Device, Report
+from .reliability import credit_corroboration, update_reliability
 from .trust import score_cell
 
 MAX_NORMAL_RMS = 8.0      # a "normal" vibration reading above this is rejected, it is a shock not baseline
@@ -48,13 +49,23 @@ def report_api(request):
     strength, is_anomaly, learned = assess_shock(cell_id, magnitude)
 
     # A shock that is normal for this place is not an anomaly, so it is not stored as a report
+    duplicate = False
     if is_anomaly:
-        Report.objects.create(
-            device=device, latitude=lat, longitude=lng, magnitude=magnitude, anomaly=strength
-        )
+        since = timezone.now() - timedelta(seconds=settings.REPORT_WINDOW_SECONDS)
+        # One phone counts once per place per time window, so repeating a shake cannot farm trust
+        duplicate = Report.objects.filter(device=device, cell_id=cell_id, created_at__gte=since).exists()
+        if not duplicate:
+            Report.objects.create(
+                device=device, latitude=lat, longitude=lng, magnitude=magnitude, anomaly=strength
+            )
+            credit_corroboration(cell_id)   # phones that now confirm each other earn trust
+            update_reliability(device)      # a report nobody confirms slowly lowers trust
 
     result = score_cell(cell_id)
-    result.update({"accepted": is_anomaly, "anomaly": strength, "baseline_learned": learned})
+    result.update({
+        "accepted": is_anomaly, "duplicate": duplicate,
+        "anomaly": strength, "baseline_learned": learned,
+    })
     return JsonResponse(result)
 
 
@@ -112,8 +123,8 @@ DEMO_SPOTS = {
 @csrf_exempt
 @require_POST
 def demo_api(request, scenario):
-    """Fires a demo scenario into the real trust engine. Only works while DEBUG is on."""
-    if not settings.DEBUG:
+    """Fires a demo scenario into the real trust engine. Only works while DEMO_MODE is on."""
+    if not settings.DEMO_MODE:
         return JsonResponse({"error": "Demo mode is off."}, status=404)
 
     if scenario == "clear":

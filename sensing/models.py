@@ -1,5 +1,4 @@
 import math
-
 from django.conf import settings
 from django.db import models
 
@@ -25,11 +24,14 @@ class Report(models.Model):
         null=True, blank=True,
         help_text="How many times stronger this shock is than normal vibration in this place",
     )
+    corroborated = models.BooleanField(
+        default=False, help_text="True once another independent device confirmed this report"
+    )
     cell_id = models.CharField(max_length=40, db_index=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ("-created_at",)
+        ordering = ["-created_at"]
 
     @staticmethod
     def make_cell_id(lat, lng):
@@ -52,7 +54,7 @@ class BaselineSample(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ("-created_at",)
+        ordering = ["-created_at"]
 
     def __str__(self):
         return f"{self.cell_id}: {self.rms:.2f} m/s²"
